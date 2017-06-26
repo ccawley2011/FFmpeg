@@ -3760,6 +3760,7 @@ fi
 exesuf() {
     case $1 in
         mingw32*|mingw64*|win32|win64|cygwin*|*-dos|freedos|opendos|os/2*|symbian) echo .exe ;;
+        riscos) echo ,e1f ;;
     esac
 }
 
@@ -5038,6 +5039,11 @@ case $target_os in
         add_cppflags -D_OSF_SOURCE -D_POSIX_PII -D_REENTRANT
         ;;
     minix)
+        ;;
+    riscos)
+        LDEXEFLAGS="-static"
+        add_cppflags '-I$GCCSDK_INSTALL_ENV/include'
+        add_ldflags '-L$GCCSDK_INSTALL_ENV/lib'
         ;;
     none)
         ;;

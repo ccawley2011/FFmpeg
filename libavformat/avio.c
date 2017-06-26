@@ -257,7 +257,7 @@ static const struct URLProtocol *url_find_protocol(const char *filename)
 
     if (filename[proto_len] != ':' &&
         (strncmp(filename, "subfile,", 8) || !strchr(filename + proto_len + 1, ':')) ||
-        is_dos_path(filename))
+        is_dos_path(filename) || strstr(filename, "::") != NULL)
         strcpy(proto_str, "file");
     else
         av_strlcpy(proto_str, filename,
