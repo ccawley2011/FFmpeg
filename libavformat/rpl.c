@@ -119,6 +119,9 @@ static int rpl_read_header(AVFormatContext *s)
     AVStream *vst = NULL, *ast = NULL;
     int total_audio_size;
     int error = 0;
+    const char *endptr;
+    char audio_type[RPL_LINE_LENGTH];
+    char audio_codec[RPL_LINE_LENGTH];
 
     uint32_t i;
 
@@ -185,16 +188,23 @@ static int rpl_read_header(AVFormatContext *s)
 
     // ARMovie supports multiple audio tracks; I don't have any
     // samples, though. This code will ignore additional tracks.
-    audio_format = read_line_and_int(pb, &error);  // audio format ID
+    error |= read_line(pb, line, sizeof(line));
+    audio_format = read_int(line, &endptr, &error);
+    strcpy(audio_codec, endptr);
     if (audio_format) {
         ast = avformat_new_stream(s, NULL);
         if (!ast)
             return AVERROR(ENOMEM);
         ast->codecpar->codec_type      = AVMEDIA_TYPE_AUDIO;
         ast->codecpar->codec_tag       = audio_format;
-        ast->codecpar->sample_rate     = read_line_and_int(pb, &error);  // audio bitrate
+        error |= read_line(pb, line, sizeof(line));
+        ast->codecpar->sample_rate     = read_int(line, &endptr, &error);  // audio bitrate
+        if (strstr(endptr, "\xB5s") != NULL)
+            ast->codecpar->sample_rate = 1000000 / ast->codecpar->sample_rate;
         ast->codecpar->channels        = read_line_and_int(pb, &error);  // number of audio channels
-        ast->codecpar->bits_per_coded_sample = read_line_and_int(pb, &error);  // audio bits per sample
+        error |= read_line(pb, line, sizeof(line));
+        ast->codecpar->bits_per_coded_sample = read_int(line, &endptr, &error);  // audio bits per sample
+        strcpy(audio_type, endptr);
         // At least one sample uses 0 for ADPCM, which is really 4 bits
         // per sample.
         if (ast->codecpar->bits_per_coded_sample == 0)
@@ -211,9 +221,32 @@ static int rpl_read_header(AVFormatContext *s)
                     // 16-bit audio is always signed
                     ast->codecpar->codec_id = AV_CODEC_ID_PCM_S16LE;
                     break;
+                } else if (ast->codecpar->bits_per_coded_sample == 8) {
+                    if(strstr(audio_type, "unsigned") != NULL) {
+                        ast->codecpar->codec_id = AV_CODEC_ID_PCM_U8;
+                        break;
+                    } else if(strstr(audio_type, "linear") != NULL) {
+                        ast->codecpar->codec_id = AV_CODEC_ID_PCM_S8;
+                        break;
+                    } else {
+                        // TODO: add VIDC support...
+                        break;
+                    }
+                } else if (ast->codecpar->bits_per_coded_sample == 4) {
+                    ast->codecpar->codec_id = AV_CODEC_ID_ADPCM_IMA_EA_SEAD;
+                    break;
                 }
-                // There are some other formats listed as legal per the spec;
-                // samples needed.
+                break;
+            case 2:
+                if (strcmp(audio_codec," adpcm") == 0) {
+                    ast->codecpar->codec_id = AV_CODEC_ID_ADPCM_IMA_EA_SEAD;
+                    break;
+                } else {
+                    avpriv_report_missing_feature(s, "Audio format %"PRId32" (%s)",
+                                                  audio_format,
+                                                  audio_codec);
+                    break;
+                }
                 break;
             case 101:
                 if (ast->codecpar->bits_per_coded_sample == 8) {
