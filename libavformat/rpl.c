@@ -122,7 +122,7 @@ static int rpl_read_header(AVFormatContext *s)
 
     uint32_t i;
 
-    int32_t audio_format, chunk_catalog_offset, number_of_chunks;
+    int32_t video_format, audio_format, chunk_catalog_offset, number_of_chunks;
     AVRational fps;
 
     char line[RPL_LINE_LENGTH];
@@ -142,37 +142,43 @@ static int rpl_read_header(AVFormatContext *s)
     av_dict_set(&s->metadata, "author"   , line, 0);
 
     // video headers
-    vst = avformat_new_stream(s, NULL);
-    if (!vst)
-        return AVERROR(ENOMEM);
-    vst->codecpar->codec_type      = AVMEDIA_TYPE_VIDEO;
-    vst->codecpar->codec_tag       = read_line_and_int(pb, &error);  // video format
-    vst->codecpar->width           = read_line_and_int(pb, &error);  // video width
-    vst->codecpar->height          = read_line_and_int(pb, &error);  // video height
-    vst->codecpar->bits_per_coded_sample = read_line_and_int(pb, &error);  // video bits per sample
-    error |= read_line(pb, line, sizeof(line));                   // video frames per second
-    fps = read_fps(line, &error);
-    avpriv_set_pts_info(vst, 32, fps.den, fps.num);
+    video_format = read_line_and_int(pb, &error);
+    if (video_format) {
+        vst = avformat_new_stream(s, NULL);
+        if (!vst)
+            return AVERROR(ENOMEM);
+        vst->codecpar->codec_type      = AVMEDIA_TYPE_VIDEO;
+        vst->codecpar->codec_tag       = video_format;
+        vst->codecpar->width           = read_line_and_int(pb, &error);  // video width
+        vst->codecpar->height          = read_line_and_int(pb, &error);  // video height
+        vst->codecpar->bits_per_coded_sample = read_line_and_int(pb, &error);  // video bits per sample
+        error |= read_line(pb, line, sizeof(line));                   // video frames per second
+        fps = read_fps(line, &error);
+        avpriv_set_pts_info(vst, 32, fps.den, fps.num);
 
-    // Figure out the video codec
-    switch (vst->codecpar->codec_tag) {
+        // Figure out the video codec
+        switch (vst->codecpar->codec_tag) {
 #if 0
-        case 122:
-            vst->codecpar->codec_id = AV_CODEC_ID_ESCAPE122;
-            break;
+            case 122:
+                vst->codecpar->codec_id = AV_CODEC_ID_ESCAPE122;
+                break;
 #endif
-        case 124:
-            vst->codecpar->codec_id = AV_CODEC_ID_ESCAPE124;
-            // The header is wrong here, at least sometimes
-            vst->codecpar->bits_per_coded_sample = 16;
-            break;
-        case 130:
-            vst->codecpar->codec_id = AV_CODEC_ID_ESCAPE130;
-            break;
-        default:
-            avpriv_report_missing_feature(s, "Video format %s",
-                                          av_fourcc2str(vst->codecpar->codec_tag));
-            vst->codecpar->codec_id = AV_CODEC_ID_NONE;
+            case 124:
+                vst->codecpar->codec_id = AV_CODEC_ID_ESCAPE124;
+                // The header is wrong here, at least sometimes
+                vst->codecpar->bits_per_coded_sample = 16;
+                break;
+            case 130:
+                vst->codecpar->codec_id = AV_CODEC_ID_ESCAPE130;
+                break;
+            default:
+                avpriv_report_missing_feature(s, "Video format %s",
+                                              av_fourcc2str(vst->codecpar->codec_tag));
+                vst->codecpar->codec_id = AV_CODEC_ID_NONE;
+        }
+    } else {
+        for (i = 0; i < 4; i++)
+            error |= read_line(pb, line, sizeof(line));
     }
 
     // Audio headers
@@ -231,7 +237,7 @@ static int rpl_read_header(AVFormatContext *s)
     }
 
     rpl->frames_per_chunk = read_line_and_int(pb, &error);  // video frames per chunk
-    if (rpl->frames_per_chunk > 1 && vst->codecpar->codec_tag != 124)
+    if (rpl->frames_per_chunk > 1 && video_format && vst->codecpar->codec_tag != 124)
         av_log(s, AV_LOG_WARNING,
                "Don't know how to split frames for video format %s. "
                "Video stream will be broken!\n", av_fourcc2str(vst->codecpar->codec_tag));
@@ -246,7 +252,8 @@ static int rpl_read_header(AVFormatContext *s)
         read_line_and_int(pb, &error);           //   (file index)
     error |= read_line(pb, line, sizeof(line));  // offset to "helpful" sprite
     error |= read_line(pb, line, sizeof(line));  // size of "helpful" sprite
-    error |= read_line(pb, line, sizeof(line));  // offset to key frame list
+    if (video_format)
+        error |= read_line(pb, line, sizeof(line));  // offset to key frame list
 
     // Read the index
     avio_seek(pb, chunk_catalog_offset, SEEK_SET);
@@ -259,8 +266,10 @@ static int rpl_read_header(AVFormatContext *s)
             error = -1;
             continue;
         }
-        av_add_index_entry(vst, offset, i * rpl->frames_per_chunk,
-                           video_size, rpl->frames_per_chunk, 0);
+
+        if (vst)
+            av_add_index_entry(vst, offset, i * rpl->frames_per_chunk,
+                               video_size, rpl->frames_per_chunk, 0);
         if (ast)
             av_add_index_entry(ast, offset + video_size, total_audio_size,
                                audio_size, audio_size * 8, 0);
